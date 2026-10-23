@@ -1,0 +1,64 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { DEFAULT, ENGINE_VERSION, generate, mutateMaps, rng, validateSnapshot, type Snapshot } from './engine.ts';
+
+test('generation is reproducible and diverse across seeds', () => {
+  assert.deepEqual(generate(DEFAULT), generate(structuredClone(DEFAULT)));
+  const fingerprints = new Set();
+  for (let seed = 0; seed < 120; seed++) {
+    const loop = generate({ ...DEFAULT, seed });
+    fingerprints.add(JSON.stringify(loop.notes.map(n => [n.pitch, n.start, n.duration])));
+  }
+  assert.ok(fingerprints.size > 110, `${fingerprints.size} distinct loops`);
+});
+
+test('random parameter combinations produce bounded, valid musical events', () => {
+  const random = rng(2391);
+  for (let seed = 0; seed < 1500; seed++) {
+    const s = { ...DEFAULT, seed, bars: [2, 4, 8][seed % 3], root: seed % 12, mode: (['minor', 'major', 'dorian', 'mixolydian'] as const)[seed % 4], maps: DEFAULT.maps.map(m => ({ ...m, x: random(), y: random() })) };
+    const loop = generate(s);
+    assert.equal(loop.chords.length, s.bars);
+    assert.ok(loop.notes.length > s.bars * 3);
+    for (const n of loop.notes) {
+      assert.ok(n.pitch >= 28 && n.pitch <= 96 && Number.isInteger(n.pitch));
+      assert.ok(n.duration > 0 && n.start >= 0 && n.start + n.duration <= loop.beats + 1e-8);
+      assert.ok(n.velocity > 0 && n.velocity <= 1);
+    }
+  }
+});
+
+test('every macro changes its intended musical dimension', () => {
+  const at = (map: number, axis: 'x' | 'y', value: number) => generate({ ...DEFAULT, maps: DEFAULT.maps.map((m, i) => i === map ? { ...m, [axis]: value } : m) });
+  for (let i = 0; i < 5; i++) for (const axis of ['x', 'y'] as const) assert.notDeepEqual(at(i, axis, 0).notes, at(i, axis, 1).notes, `map ${i} ${axis}`);
+  assert.ok(at(2, 'x', 1).notes.length > at(2, 'x', 0).notes.length);
+  const mean = (loop: ReturnType<typeof generate>, field: 'pitch' | 'duration') => loop.notes.reduce((sum, n) => sum + n[field], 0) / loop.notes.length;
+  assert.ok(mean(at(1, 'y', 1), 'pitch') > mean(at(1, 'y', 0), 'pitch'));
+  assert.ok(mean(at(4, 'x', 1), 'duration') > mean(at(4, 'x', 0), 'duration'));
+});
+
+test('frozen bars preserve exact events under regeneration', () => {
+  const original = generate(DEFAULT);
+  const next = generate({ ...DEFAULT, seed: 12612, maps: DEFAULT.maps.map(m => ({ ...m, x: .98, y: .95 })) }, original, [0, 2]);
+  for (const bar of [0, 2]) {
+    assert.deepEqual(next.notes.filter(n => n.bar === bar), original.notes.filter(n => n.bar === bar));
+    assert.deepEqual(next.chords[bar], original.chords[bar]);
+  }
+  assert.notDeepEqual(next.notes.filter(n => n.bar === 1), original.notes.filter(n => n.bar === 1));
+});
+
+test('locked maps are preserved for global and local exploration', () => {
+  const s = { ...DEFAULT, maps: DEFAULT.maps.map((m, i) => ({ ...m, locked: i % 2 === 0 })) };
+  for (const wide of [false, true]) {
+    const changed = mutateMaps(s, wide);
+    for (let i = 0; i < 5; i += 2) assert.deepEqual(changed.maps[i], s.maps[i]);
+    assert.equal(changed.bpm, s.bpm); assert.equal(changed.root, s.root);
+  }
+});
+
+test('project validation rejects invalid data and accepts round trips', () => {
+  const snapshot: Snapshot = { settings: DEFAULT, loop: generate(DEFAULT), instrument: 'grand-piano', effects: { volume: .7, space: .2, tone: .5 }, frozen: [], version: ENGINE_VERSION };
+  assert.ok(validateSnapshot(JSON.parse(JSON.stringify(snapshot))));
+  assert.equal(validateSnapshot({ ...snapshot, settings: { ...DEFAULT, bpm: 0 } }), null);
+  assert.equal(validateSnapshot({ ...snapshot, loop: { ...snapshot.loop, notes: [{ ...snapshot.loop.notes[0], duration: -1 }] } }), null);
+  assert.equal(validateSnapshot(null), null);
+});
