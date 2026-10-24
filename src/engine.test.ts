@@ -89,3 +89,10 @@ test('new seeds vary rhythmic phrases as well as pitches', () => {
   }
   assert.ok(patterns.size >= 4, `${patterns.size} distinct comping rhythms`);
 });
+
+test('strummed chords do not chop a sustained melody into tiny retriggers', () => {
+  const loop = generate({ ...DEFAULT, maps: DEFAULT.maps.map((m, i) => i === 4 ? { ...m, x: 1 } : m) });
+  const leads = loop.notes.filter(n => n.voice === 'lead');
+  assert.ok(leads.length > 0);
+  assert.ok(leads.every(n => n.duration >= .2), 'melody attacks should survive nearby chord attacks');
+});

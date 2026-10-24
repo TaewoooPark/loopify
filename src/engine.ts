@@ -170,13 +170,14 @@ export function generate(s: Settings, previous?: Loop, frozen: number[] = []): L
     result.push(...previous.notes.filter(n => retained.has(n.bar)).map(n => ({ ...n, duration: Math.min(n.duration, beats - n.start) })));
     for (const bar of retained) { if (previous.chords[bar]) chords[bar] = structuredClone(previous.chords[bar]); }
   }
-  // Merge same-pitch retriggers across voices so MIDI and the browser sampler agree.
+  // A strummed chord may reach a melody pitch just after the melody starts.
+  // Merge those attacks instead of chopping the lead into a tiny retrigger.
   result.sort((a, b) => a.start - b.start || b.velocity - a.velocity);
   const merged: Note[] = [];
   for (const n of result) {
     if (retained.has(n.bar)) { merged.push(n); continue; }
-    const existing = merged.find(p => !retained.has(p.bar) && p.pitch === n.pitch && Math.abs(p.start - n.start) < .025);
-    if (existing) { existing.duration = Math.max(existing.duration, n.duration); existing.velocity = Math.max(existing.velocity, n.velocity); if (n.voice === 'lead') existing.voice = 'lead'; }
+    const existing = merged.find(p => !retained.has(p.bar) && p.bar === n.bar && p.pitch === n.pitch && Math.abs(p.start - n.start) < (p.voice !== n.voice ? .18 : .025));
+    if (existing) { existing.duration = Math.max(existing.duration, n.start - existing.start + n.duration); existing.velocity = Math.max(existing.velocity, n.velocity); if (n.voice === 'lead') existing.voice = 'lead'; }
     else merged.push({ ...n });
   }
   const byPitch = new Map<number, Note[]>();
