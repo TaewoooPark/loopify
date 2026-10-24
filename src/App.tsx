@@ -10,14 +10,14 @@ function stored(): Snapshot { try { return validateSnapshot(JSON.parse(localStor
 type Saved = { id: string; date: string; snapshot: Snapshot };
 function storedSaves(): Saved[] { try { const data = JSON.parse(localStorage.getItem('loopify.saved') ?? '[]'); return Array.isArray(data) ? data.filter((v: Saved) => v && typeof v.id === 'string' && validateSnapshot(v.snapshot)).slice(0, 40) : []; } catch { return []; } }
 
-function MapPad({ index, value, begin, change }: { index: number; value: MapValue; begin: () => void; change: (value: MapValue) => void }) {
+function MapPad({ index, value, active, begin, change }: { index: number; value: MapValue; active: boolean; begin: () => void; change: (value: MapValue) => void }) {
   const meta = MAPS[index], pad = useRef<HTMLDivElement>(null), dragging = useRef(false);
   const position = (event: ReactPointerEvent) => {
     if (value.locked || !pad.current) return;
     const rect = pad.current.getBoundingClientRect();
     change({ ...value, x: clamp((event.clientX - rect.left - 18) / (rect.width - 36)), y: clamp(1 - (event.clientY - rect.top - 18) / (rect.height - 36)) });
   };
-  return <section className={`map-card ${value.locked ? 'is-locked' : ''}`} aria-label={meta.name}>
+  return <section id={`map-${index}`} className={`map-card ${active ? 'is-active' : ''} ${value.locked ? 'is-locked' : ''}`} aria-label={meta.name}>
     <div className="map-tools">
       <button className="icon micro" aria-label={`Randomize ${meta.name}`} title={`Randomize ${meta.name}`} disabled={value.locked} onClick={() => { begin(); change({ ...value, x: crypto.getRandomValues(new Uint32Array(1))[0] / 4294967296, y: crypto.getRandomValues(new Uint32Array(1))[0] / 4294967296 }); }}><Shuffle size={13}/></button>
       <button className={`icon micro ${value.locked ? 'selected' : ''}`} aria-label={`${value.locked ? 'Unlock' : 'Lock'} ${meta.name}`} aria-pressed={value.locked} title={`${value.locked ? 'Unlock' : 'Lock'} ${meta.name}`} onClick={() => { begin(); change({ ...value, locked: !value.locked }); }}>{value.locked ? <LockKeyhole size={13}/> : <LockKeyholeOpen size={13}/>}</button>
@@ -84,8 +84,9 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>(stored), current = useRef(snapshot);
   const [audio] = useState(() => new AudioEngine());
   const [playing, setPlaying] = useState(false), [loading, setLoading] = useState(false), [busy, setBusy] = useState<string | null>(null);
-  const [panel, setPanel] = useState<'export' | 'sound' | 'saved' | null>(null), [tail, setTail] = useState(false), [message, setMessage] = useState('');
+  const [panel, setPanel] = useState<'export' | 'sound' | 'saved' | 'about' | null>(null), [tail, setTail] = useState(false), [message, setMessage] = useState('');
   const [saved, setSaved] = useState<Saved[]>(storedSaves), [historySize, setHistorySize] = useState([0, 0]);
+  const [activeMap, setActiveMap] = useState(0);
   const undo = useRef<Snapshot[]>([]), redo = useRef<Snapshot[]>([]), importRef = useRef<HTMLInputElement>(null), loadId = useRef(0), playId = useRef(0);
   current.current = snapshot;
   const announce = useCallback((text: string) => setMessage(text), []);
@@ -94,12 +95,18 @@ export default function App() {
   useEffect(() => { audio.setEffects(snapshot.effects); }, [audio, snapshot.effects]);
   useEffect(() => { if (playing) audio.replace(snapshot.loop, snapshot.settings.bpm); }, [audio, playing, snapshot.loop, snapshot.settings.bpm]);
   useEffect(() => () => audio.stop(), [audio]);
+  useEffect(() => {
+    if (!panel) return;
+    const previous = document.activeElement as HTMLElement | null;
+    document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="Close"]')?.focus();
+    return () => previous?.focus();
+  }, [panel]);
   const checkpoint = useCallback(() => { undo.current = [...undo.current.slice(-39), structuredClone(current.current)]; redo.current = []; setHistorySize([undo.current.length, 0]); }, []);
   const set = useCallback((next: Snapshot) => { current.current = next; setSnapshot(next); }, []);
   const updateSettings = (settings: Settings) => {
     const old = current.current, prior = old.settings;
     const regenerate = settings.seed !== prior.seed || settings.bars !== prior.bars || settings.root !== prior.root || settings.mode !== prior.mode || settings.maps.some((m, i) => m.x !== prior.maps[i].x || m.y !== prior.maps[i].y);
-    set({ ...old, settings, loop: regenerate ? generate(settings, old.loop, old.frozen) : old.loop, frozen: old.frozen.filter(b => b < settings.bars) });
+    set({ ...old, settings, loop: regenerate ? generate(settings, old.loop, old.frozen) : old.loop, frozen: old.frozen.filter(b => b < settings.bars), version: regenerate ? ENGINE_VERSION : old.version });
   };
   const restore = (direction: 'undo' | 'redo') => {
     const from = direction === 'undo' ? undo : redo, to = direction === 'undo' ? redo : undo;
@@ -188,7 +195,7 @@ export default function App() {
     <header className="toolbar">
       <div className="toolbar-left">
         <button className={`play-button ${playing ? 'playing' : ''}`} aria-label={loading ? 'Cancel loading' : playing ? 'Pause' : 'Play'} title="Play / pause · Space" onClick={() => void togglePlay()}>{loading ? <LoaderCircle className="spin" size={18}/> : playing ? <Pause size={16} fill="currentColor"/> : <Play size={16} fill="currentColor"/>}</button>
-        <label className="bpm-control"><input aria-label="Tempo" type="number" min="30" max="240" value={snapshot.settings.bpm} onChange={e => { const n = Number(e.target.value); if (n >= 30 && n <= 240) changeGlobal({ bpm: n }); }}/><span>BPM</span></label>
+        <label className="bpm-control"><input aria-label="Tempo" type="number" inputMode="numeric" min="30" max="240" value={snapshot.settings.bpm} onChange={e => { const n = Number(e.target.value); if (n >= 30 && n <= 240) changeGlobal({ bpm: n }); }}/><span>BPM</span></label>
         <span className="divider"/>
         <select aria-label="Key" value={snapshot.settings.root} onChange={e => changeGlobal({ root: Number(e.target.value) })}>{PITCHES.map((p, i) => <option key={i} value={i}>{p}</option>)}</select>
         <select aria-label="Mode" value={snapshot.settings.mode} onChange={e => changeGlobal({ mode: e.target.value as Settings['mode'] })}><option value="minor">Minor</option><option value="major">Major</option><option value="dorian">Dorian</option><option value="mixolydian">Mixolydian</option></select>
@@ -208,18 +215,31 @@ export default function App() {
 
     <div className="middle-toolbar">
       <div className="sound-control"><span className="sound-status"/><div className="instrument-select"><select aria-label="Instrument" value={snapshot.instrument} onChange={event => void selectInstrument(event.target.value)}>{instruments.map(i => <option value={i.id} key={i.id}>{i.name}</option>)}</select><ChevronDown size={12}/></div><button className={`icon small ${panel === 'sound' ? 'selected' : ''}`} aria-label="Sound settings" title="Sound settings" onClick={() => setPanel(panel === 'sound' ? null : 'sound')}><SlidersHorizontal size={14}/></button></div>
-      <div className="generate-controls"><button className="text-button subtle" title="Vary unlocked maps nearby" onClick={() => regenerate('near')}>Vary <MoveUpRight size={13}/></button><button className="text-button" title="New loop · R" onClick={() => regenerate('new')}><Shuffle size={14}/>Generate</button><button className="icon small" aria-label="Explore all unlocked maps" title="Explore · Shift R" onClick={() => regenerate('wide')}><RotateCcw size={15}/></button></div>
+      <div className="generate-controls"><button className="text-button subtle" aria-label="Vary" title="Vary unlocked maps nearby" onClick={() => regenerate('near')}><span className="action-label">Vary</span><MoveUpRight size={15}/></button><button className="text-button" aria-label="Generate" title="New loop · R" onClick={() => regenerate('new')}><Shuffle size={16}/><span className="action-label">Generate</span></button><button className="icon small" aria-label="Explore all unlocked maps" title="Explore · Shift R" onClick={() => regenerate('wide')}><RotateCcw size={16}/></button></div>
     </div>
 
-    <div className="maps">{snapshot.settings.maps.map((value, index) => <MapPad key={index} index={index} value={value} begin={checkpoint} change={value => {
+    <div className="maps-area"><div className="maps">{snapshot.settings.maps.map((value, index) => <MapPad key={index} index={index} active={index === activeMap} value={value} begin={checkpoint} change={value => {
       const old = current.current.settings; const maps = old.maps.map((m, i) => i === index ? value : m);
       updateSettings({ ...old, maps });
-    }}/>)}</div>
+    }}/>)}</div><nav className="map-nav" aria-label="Maps">{MAPS.map((map, index) => <button key={map.name} aria-label={`Show ${map.name} map`} aria-pressed={activeMap === index} aria-controls={`map-${index}`} title={map.name} onClick={() => setActiveMap(index)} onKeyDown={event => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault(); const next = (index + (event.key === 'ArrowRight' ? 1 : 4)) % 5;
+      setActiveMap(next); (event.currentTarget.parentElement?.children[next] as HTMLButtonElement)?.focus();
+    }}><span>{String(index + 1).padStart(2, '0')}</span>{snapshot.settings.maps[index].locked && <LockKeyhole size={10}/>}</button>)}</nav></div>
 
-    <footer className="footer"><span className="seed">{snapshot.settings.seed.toString(16).padStart(8, '0')}</span><div className="volume"><Volume2 size={13}/><input type="range" min="0" max="1" step=".01" aria-label="Volume" value={snapshot.effects.volume} onChange={event => changeEffect({ volume: Number(event.target.value) })}/></div><a href="./SAMPLE-CREDITS.txt" target="_blank" rel="noreferrer">Credits</a></footer>
+    <footer className="footer"><span className="seed">{snapshot.settings.seed.toString(16).padStart(8, '0')}</span><div className="volume"><Volume2 size={13}/><input type="range" min="0" max="1" step=".01" aria-label="Volume" value={snapshot.effects.volume} onChange={event => changeEffect({ volume: Number(event.target.value) })}/></div><div className="footer-links"><a href="./SAMPLE-CREDITS.txt" target="_blank" rel="noreferrer">Credits</a><button onClick={() => setPanel('about')}>About</button></div></footer>
 
-    {panel && <div className="panel-scrim" onMouseDown={event => { if (event.target === event.currentTarget) setPanel(null); }}><aside className={`floating-panel ${panel}`} role="dialog" aria-modal="true" aria-label={panel === 'sound' ? 'Sound settings' : panel === 'saved' ? 'Saved loops' : 'Export'} onKeyDown={event => { if (event.key === 'Escape') setPanel(null); }}>
-      <div className="panel-heading"><span>{panel === 'sound' ? selectedInstrument.name : panel === 'saved' ? 'Saved' : 'Export'}</span><button className="icon small" aria-label="Close" onClick={() => setPanel(null)}><X size={16}/></button></div>
+    {panel && <div className="panel-scrim" onMouseDown={event => { if (event.target === event.currentTarget) setPanel(null); }}><aside className={`floating-panel ${panel}`} role="dialog" aria-modal="true" aria-label={panel === 'sound' ? 'Sound settings' : panel === 'saved' ? 'Saved loops' : panel === 'about' ? 'About Loopify' : 'Export'} onKeyDown={event => {
+      if (event.key === 'Escape') setPanel(null);
+      if (event.key === 'Tab') {
+        const controls = event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled)');
+        const first = controls[0], last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
+    }}>
+      <div className="panel-heading"><span>{panel === 'sound' ? selectedInstrument.name : panel === 'saved' ? 'Saved' : panel === 'about' ? 'About' : 'Export'}</span><button className="icon small" aria-label="Close" onClick={() => setPanel(null)}><X size={16}/></button></div>
+      {panel === 'about' && <><div className="about-wordmark">loopify.</div><p className="about-copy">A small instrument for finding your next loop. Move through harmony, space, pulse, orbit and breath. Keep what speaks to you.</p><p className="about-copy">Music theory, seeded variation and Web Audio. Everything runs in your browser. Export notes as MIDI, sound as WAV, or both together.</p><div className="about-person"><strong>Made by Taewoo Park</strong><p className="about-copy">Aligning physics, code, and culture toward a civilization-scale solution.</p><div className="about-links"><a href="https://taewoopark.com" target="_blank" rel="noreferrer">Website ↗</a><a href="https://github.com/TaewoooPark" target="_blank" rel="noreferrer">GitHub ↗</a><a href="https://github.com/TaewoooPark/loopify" target="_blank" rel="noreferrer">Source ↗</a></div></div></>}
       {panel === 'export' && <><div className="export-options">{(['midi', 'wav', 'zip', 'json'] as const).map(type => <button disabled={!!busy} key={type} onClick={() => void exportFile(type)}><span>{type === 'json' ? 'Project' : type.toUpperCase()}</span>{busy === type ? <LoaderCircle className="spin" size={15}/> : <Download size={14}/>}</button>)}</div><label className="check-row"><input type="checkbox" checked={tail} onChange={e => setTail(e.target.checked)}/>Include tail</label><span className="panel-meta">WAV · 44.1 kHz / 24-bit</span></>}
       {panel === 'sound' && <><label className="slider-row"><span>Tone</span><input type="range" min="0" max="1" step=".01" value={snapshot.effects.tone} onPointerDown={checkpoint} onChange={e => changeEffect({ tone: Number(e.target.value) })}/></label><label className="slider-row"><span>Space</span><input type="range" min="0" max="1" step=".01" value={snapshot.effects.space} onPointerDown={checkpoint} onChange={e => changeEffect({ space: Number(e.target.value) })}/></label><div className="radius-controls">{MAPS.map((m, i) => <label className="slider-row" key={m.name}><span>{m.name}</span><input aria-label={`${m.name} variation range`} type="range" min="0" max=".5" step=".01" value={snapshot.settings.maps[i].radius} disabled={snapshot.settings.maps[i].locked} onPointerDown={checkpoint} onChange={e => { const s = current.current.settings; updateSettings({ ...s, maps: s.maps.map((map, index) => index === i ? { ...map, radius: Number(e.target.value) } : map) }); }}/></label>)}</div></>}
       {panel === 'saved' && <><div className="save-actions"><button className="text-button" onClick={() => { persistSaved([{ id: crypto.randomUUID(), date: new Date().toISOString(), snapshot: structuredClone(current.current) }, ...saved].slice(0, 40)); announce('Saved.'); }}><Plus size={14}/>Save</button><button className="icon" aria-label="Open project" title="Open project" onClick={() => importRef.current?.click()}><FolderOpen size={17}/></button></div><div className="saved-list">{saved.map(item => <div className="saved-row" key={item.id}><button onClick={async () => { checkpoint(); try { await audio.initialize(item.snapshot.instrument); set(structuredClone(item.snapshot)); setPanel(null); } catch { announce('Could not load instrument.'); } }}><span>{PITCHES[item.snapshot.settings.root]} {item.snapshot.settings.mode}</span><span>{item.snapshot.settings.bpm} · {item.snapshot.settings.bars} bars</span></button><button className="icon small" aria-label="Delete saved loop" onClick={() => persistSaved(saved.filter(v => v.id !== item.id))}><Trash2 size={13}/></button></div>)}</div></>}

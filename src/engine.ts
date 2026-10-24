@@ -6,7 +6,7 @@ export type Chord = { name: string; pitches: number[]; root: number; bar: number
 export type Loop = { notes: Note[]; chords: Chord[]; beats: number; seed: number };
 export type Snapshot = { settings: Settings; loop: Loop; instrument: string; effects: Effects; frozen: number[]; version: number };
 export type Effects = { tone: number; space: number; volume: number };
-export const ENGINE_VERSION = 1;
+export const ENGINE_VERSION = 2;
 export const PITCHES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
 export const MAPS = [
   { name: 'Gravity', left: 'Belong', right: 'Depart', bottom: 'Ease', top: 'Tension' },
@@ -53,7 +53,10 @@ export function generate(s: Settings, previous?: Loop, frozen: number[] = []): L
   const path = PATHS[Math.floor(harmony() * PATHS.length)];
   const beats = s.bars * 4;
   const notes: Note[] = [], chords: Chord[] = [];
-  const center = 49 + Math.round(space.y * 20);
+  const center = 45 + Math.round(space.y * 27);
+  const character = rng(s.seed ^ 0x4f12);
+  const pattern = Math.floor(character() * 5), direction = character() < .5 ? 1 : -1;
+  const rhythmicMotif = Array.from({ length: 16 }, () => rhythm());
   const motif = Array.from({ length: 8 }, () => melody());
   let lastLead = center + 12;
   let lastVoicing: number[] = [];
@@ -82,7 +85,8 @@ export function generate(s: Settings, previous?: Loop, frozen: number[] = []): L
         voicing.push(p);
       }
       if (space.x > .37 && voicing.length > 2) voicing[0] -= 12;
-      if (space.x > .72 && voicing.length > 3) voicing[1] -= 12;
+      if (space.x > .64 && voicing.length > 3) voicing[1] -= 12;
+      if (space.x > .84) voicing[voicing.length - 1] += 12;
       voicing.sort((a, b) => a - b);
       const mean = voicing.reduce((a, b) => a + b) / voicing.length;
       const shift = 12 * Math.round((center - mean) / 12);
@@ -97,45 +101,67 @@ export function generate(s: Settings, previous?: Loop, frozen: number[] = []): L
     const voiced = [...new Set(candidates[0])];
     lastVoicing = voiced;
     chords.push({ name: chordLabel(pcs, rootPc), pitches: voiced, root: rootPc, bar });
-    const chordSlots = pulse.x < .24 ? [0] : pulse.x < .65 ? [0, 2] : [0, 1, 2, 3];
     const skew = pulse.y;
-    const gate = .2 + breath.x * 1.65;
-    const contour = .82 + Math.sin((bar / s.bars) * Math.PI) * .15 * breath.y;
+    const gate = .08 + breath.x * 1.22;
+    const contour = 1 - breath.y * .22 + Math.sin(bar / Math.max(1, s.bars - 1) * Math.PI) * .22 * breath.y;
     function add(pitch: number, localStart: number, duration: number, velocity: number, voice: Note['voice']) {
+      if (localStart >= 4) return;
       const start = Math.max(bar * 4, Math.min(bar * 4 + localStart, beats - .0625));
-      notes.push({ id: `${bar}-${voice}-${notes.length}`, pitch: Math.round(clamp(pitch, 28, 96)), start, duration: Math.max(.06, Math.min(duration, beats - start)), velocity: clamp(velocity * contour, .25, .94), voice, bar });
+      notes.push({ id: `${bar}-${voice}-${notes.length}`, pitch: Math.round(clamp(pitch, 28, 96)), start, duration: Math.max(.06, Math.min(duration, beats - start)), velocity: clamp(velocity * contour, .12, .96), voice, bar });
     }
+    // Density opens different rhythmic vocabularies: long chords, comping,
+    // broken voicings, then sixteenth-note ostinatos. The seed selects a phrase.
+    const broken = space.x > .55 && pulse.x > .32;
+    const subdivision = pulse.x > .78 ? .25 : pulse.x > .42 ? .5 : 1;
+    const chordPatterns = [[0, 2], [0, 1.5, 3], [0, .75, 2.5], [0, 1, 2.5, 3.5], [0, 1.5, 2, 3.5]];
+    const chordSlots = pulse.x < .2 ? [0] : broken
+      ? Array.from({ length: Math.round(4 / subdivision) }, (_, i) => i * subdivision)
+      : chordPatterns[(pattern + (orbit.x > .65 ? bar : 0)) % chordPatterns.length].filter((_, i) => i === 0 || rhythmicMotif[i] < pulse.x + .28);
     for (let i = 0; i < chordSlots.length; i++) {
-      let start = chordSlots[i];
-      if (i > 0 && rhythm() < skew) start += .5;
-      const spacing = 4 / chordSlots.length;
-      const duration = Math.min(spacing - .04, spacing * gate * .8);
-      for (let n = 0; n < voiced.length; n++) {
-        const roll = pulse.x > .55 ? n * .065 * pulse.y : 0;
-        const vel = .45 + (touch() - .5) * .18 * breath.y + (i === 0 ? .07 : 0);
-        add(voiced[n], start + roll, duration, vel, 'chord');
+      const baseStart = chordSlots[i];
+      const swing = i % 2 ? skew * subdivision * .42 : 0;
+      const start = baseStart + swing;
+      const spacing = (chordSlots[i + 1] ?? 4) - baseStart;
+      const duration = Math.min(4 - start, Math.max(.07, spacing * gate));
+      const accent = i === 0 ? .16 : (i % 2 ? -.17 : .06);
+      const velocity = .52 + breath.y * (accent + (touch() - .5) * .24);
+      if (broken) {
+        const sequence = direction > 0 ? voiced : [...voiced].reverse();
+        const index = pattern % 2 ? Math.abs((i % (sequence.length * 2 - 2)) - (sequence.length - 1)) : i % sequence.length;
+        add(sequence[index], start, duration, velocity + .09, 'chord');
+      } else {
+        for (let n = 0; n < voiced.length; n++) {
+          const strum = n * space.x * .075 * (1 - pulse.x * .6);
+          add(voiced[n], start + strum, duration, velocity, 'chord');
+        }
       }
     }
-    add(pitchNear(rootPc, center - 16), 0, Math.min(3.88, 1 + breath.x * 3), .56, 'bass');
-    const steps = pulse.x < .18 ? 2 : pulse.x < .45 ? 4 : pulse.x < .76 ? 6 : 8;
+    const bass = pitchNear(rootPc, center - 18 - space.x * 7);
+    const bassSlots = pulse.x > .72 ? [0, 1.5, 2.75] : pulse.x > .4 ? [0, 2 + skew * .5] : [0];
+    for (let i = 0; i < bassSlots.length; i++) {
+      const pitch = i && orbit.x > .4 ? bass + (i % 2 ? 7 : 12) : bass;
+      add(pitch, bassSlots[i], Math.min(4 - bassSlots[i], (4 / bassSlots.length) * gate), .58 + (i ? -.12 : .06) * breath.y, 'bass');
+    }
+    const steps = pulse.x < .12 ? 1 : pulse.x < .3 ? 2 : pulse.x < .52 ? 4 : pulse.x < .8 ? 8 : 16;
     for (let i = 0; i < steps; i++) {
       const m = motif[i % motif.length];
       const randomValue = melody();
       const pick = orbit.x > randomValue ? melody() : m;
-      const target = center + 8 + (pick - .5) * (6 + orbit.y * 22);
-      const chordOptions = pcs.flatMap(pc => [-12, 0, 12].map(o => pitchNear(pc, target) + o)).filter(p => p >= center + 1 && p <= 91);
-      const nearby = [...chordOptions].sort((a, b) => (Math.abs(a - target) + Math.abs(a - lastLead) * (1 - orbit.y) * .7) - (Math.abs(b - target) + Math.abs(b - lastLead) * (1 - orbit.y) * .7));
+      // Space leaves room for broken chords; exploration adds fills and rests.
+      if ((broken && rhythmicMotif[i] < .4) || (i > 0 && rhythmicMotif[i] > .62 + pulse.x * .38)) continue;
+      const target = center + 7 + (pick - .5) * (4 + orbit.y * 40);
+      const chordOptions = pcs.flatMap(pc => [-12, 0, 12].map(o => pitchNear(pc, target) + o)).filter(p => p >= center - 5 && p <= 94);
+      const nearby = [...chordOptions].sort((a, b) => (Math.abs(a - target) + Math.abs(a - lastLead) * (1 - orbit.y) * 1.2) - (Math.abs(b - target) + Math.abs(b - lastLead) * (1 - orbit.y) * 1.2));
       let pitch = nearby[0] ?? pitchNear(rootPc, center + 9);
       let start = i * 4 / steps;
-      start = Math.round(start * 4) / 4;
-      if (i % 2 && skew > .2) start += .25 * Math.round(skew * 2);
-      if (i % 2 && pick < orbit.x * .4) {
+      if (i % 2) start += skew * Math.min(.5, 4 / steps * .42);
+      if (i % 2 && pick < orbit.x * .65) {
         const scaleOptions = scale.map(pc => pitchNear((pc + s.root) % 12, pitch));
         pitch = scaleOptions.sort((a, b) => Math.abs(a - target) - Math.abs(b - target))[0];
       }
       lastLead = pitch;
-      const accent = (i % 2 === 0 ? .12 : -.02) * breath.y;
-      add(pitch, Math.min(start, 3.75), Math.min(4 / steps * gate, 3.8), .66 + accent + (touch() - .5) * .12 * breath.y, 'lead');
+      const accent = i % 4 === 0 ? .19 : i % 2 ? -.2 : -.04;
+      add(pitch, start, Math.min(4 / steps * gate, 3.9), .63 + breath.y * (accent + (touch() - .5) * .2), 'lead');
     }
   }
   const retained = new Set(frozen.filter(b => b < s.bars));

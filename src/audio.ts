@@ -1,7 +1,7 @@
 import { sampleInstruments, type SampleInstrument } from './sample-manifest';
 import { type Effects, type Loop, type Note, clamp, rng } from './engine';
 
-type SynthInstrument = { id: string; name: string; kind: 'synth'; wave: OscillatorType; attack: number; release: number; cutoff: number; gain: number; detune?: number; fm?: boolean };
+type SynthInstrument = { id: string; name: string; kind: 'synth'; wave: OscillatorType; attack: number; release: number; cutoff: number; gain: number; detune?: number; fm?: { ratio: number; depth: number; decay: number }; drive?: number; crush?: number; resonance?: number; sweep?: number; sustain?: number };
 export type Instrument = SampleInstrument | SynthInstrument;
 export const instruments: Instrument[] = [...sampleInstruments,
   { id: 'soft-sine', name: 'Sine', kind: 'synth', wave: 'sine', attack: .012, release: .35, cutoff: 8000, gain: .48 },
@@ -9,15 +9,34 @@ export const instruments: Instrument[] = [...sampleInstruments,
   { id: 'pulse', name: 'Pulse', kind: 'synth', wave: 'square', attack: .015, release: .35, cutoff: 1100, gain: .22, detune: 5 },
   { id: 'analog', name: 'Analog', kind: 'synth', wave: 'sawtooth', attack: .02, release: .45, cutoff: 2200, gain: .23, detune: 7 },
   { id: 'pluck', name: 'Pluck', kind: 'synth', wave: 'triangle', attack: .004, release: .14, cutoff: 3200, gain: .42 },
-  { id: 'glass', name: 'Glass', kind: 'synth', wave: 'sine', attack: .004, release: 1.0, cutoff: 6000, gain: .28, fm: true },
+  { id: 'glass', name: 'Glass', kind: 'synth', wave: 'sine', attack: .004, release: 1.0, cutoff: 6000, gain: .28, fm: { ratio: 3.01, depth: 1.4, decay: 1 } },
   { id: 'pad', name: 'Air', kind: 'synth', wave: 'triangle', attack: .24, release: 1.2, cutoff: 1700, gain: .32, detune: 8 },
   { id: 'warm-pad', name: 'Felt', kind: 'synth', wave: 'sine', attack: .07, release: .7, cutoff: 950, gain: .4, detune: 3 },
+  { id: 'acid', name: 'Acid', kind: 'synth', wave: 'sawtooth', attack: .003, release: .09, cutoff: 420, gain: .22, resonance: 8, sweep: 6200, drive: 1.6, sustain: .35 },
+  { id: 'razor', name: 'Razor', kind: 'synth', wave: 'sawtooth', attack: .006, release: .16, cutoff: 7800, gain: .22, detune: 19, drive: 5, sustain: .86 },
+  { id: 'rust', name: 'Rust', kind: 'synth', wave: 'triangle', attack: .002, release: .12, cutoff: 3200, gain: .18, drive: 12, crush: 12, sustain: .45 },
+  { id: 'metal', name: 'Metal', kind: 'synth', wave: 'sine', attack: .002, release: .65, cutoff: 9800, gain: .2, fm: { ratio: 2.73, depth: 8, decay: .34 }, drive: 1.4, sustain: .22 },
+  { id: 'sub', name: 'Sub', kind: 'synth', wave: 'sine', attack: .008, release: .09, cutoff: 600, gain: .28, drive: 1.8, sustain: .85 },
+  { id: 'hollow', name: 'Hollow', kind: 'synth', wave: 'square', attack: .04, release: .5, cutoff: 650, gain: .17, resonance: 3, sweep: 1200, detune: 2, sustain: .62 },
 ];
 type Bank = { pitch: number; buffer: AudioBuffer }[];
 type Voice = { start: number; end: number; stop: (when: number) => void };
 type Bus = { input: GainNode; filter: BiquadFilterNode; wet: GainNode; master: GainNode; dispose: () => void };
 const bankCache = new Map<string, Bank>();
 const loading = new Map<string, Promise<Bank>>();
+const curves = new Map<string, Float32Array<ArrayBuffer>>();
+function distortionCurve(drive: number, steps = 0) {
+  const key = `${drive}/${steps}`;
+  if (!curves.has(key)) {
+    const curve = new Float32Array(4096);
+    for (let i = 0; i < curve.length; i++) {
+      const saturated = Math.tanh((i * 2 / (curve.length - 1) - 1) * drive) / Math.tanh(drive);
+      curve[i] = steps ? Math.round(saturated * steps) / steps : saturated;
+    }
+    curves.set(key, curve);
+  }
+  return curves.get(key)!;
+}
 const getInstrument = (id: string) => instruments.find(i => i.id === id) ?? instruments[0];
 function toMidi(name: string) { const m = name.match(/^([A-G])([#b]?)(-?\d+)$/)!; return ({ C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[m[1]]! + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0)) + (Number(m[3]) + 1) * 12; }
 
@@ -53,6 +72,19 @@ function playVoice(ctx: BaseAudioContext, bus: Bus, instrument: Instrument, bank
   filter.type = 'lowpass'; filter.frequency.value = instrument.kind === 'synth' ? instrument.cutoff : 18000;
   envelope.connect(filter); filter.connect(bus.input);
   const sources: (AudioBufferSourceNode | OscillatorNode)[] = [], extra: AudioNode[] = [];
+  let sourceInput: AudioNode = envelope;
+  if (instrument.kind === 'synth') {
+    filter.Q.value = instrument.resonance ?? .5;
+    if (instrument.sweep) {
+      filter.frequency.setValueAtTime(instrument.cutoff + instrument.sweep * note.velocity, time);
+      filter.frequency.exponentialRampToValueAtTime(instrument.cutoff, time + Math.max(.06, length * .7));
+    }
+    // Shape before the amplitude envelope so high drive cannot flatten note dynamics.
+    if (instrument.drive) {
+      const shaper = ctx.createWaveShaper(); shaper.curve = distortionCurve(instrument.drive, instrument.crush); shaper.oversample = '2x';
+      shaper.connect(envelope); sourceInput = shaper; extra.push(shaper);
+    }
+  }
   const frequency = 440 * 2 ** ((note.pitch - 69) / 12);
   const attack = instrument.kind === 'sample' ? .004 : instrument.attack;
   const release = instrument.release;
@@ -60,20 +92,21 @@ function playVoice(ctx: BaseAudioContext, bus: Bus, instrument: Instrument, bank
   const end = time + Math.max(.025, length) + release;
   envelope.gain.setValueAtTime(0, time);
   envelope.gain.linearRampToValueAtTime(gain, time + Math.min(attack, length * .4));
-  envelope.gain.setTargetAtTime(gain * (instrument.id === 'pluck' ? .18 : .72), time + attack + .015, instrument.id === 'pluck' ? .11 : .8);
+  const sustain = instrument.kind === 'synth' ? instrument.sustain ?? (instrument.id === 'pluck' ? .18 : .72) : .72;
+  envelope.gain.setTargetAtTime(gain * sustain, time + Math.min(attack, length * .4) + .005, instrument.id === 'pluck' || sustain < .5 ? .08 : .8);
   envelope.gain.setTargetAtTime(.00001, time + length, Math.max(.012, release / 5));
   envelope.gain.setValueAtTime(0, end);
   if (instrument.kind === 'sample') {
     const nearest = bank.reduce((a, b) => Math.abs(b.pitch - note.pitch) < Math.abs(a.pitch - note.pitch) ? b : a);
     const source = ctx.createBufferSource(); source.buffer = nearest.buffer; source.playbackRate.value = 2 ** ((note.pitch - nearest.pitch) / 12); source.connect(envelope); sources.push(source);
   } else {
-    const osc = ctx.createOscillator(); osc.type = instrument.wave; osc.frequency.value = frequency; osc.connect(envelope); sources.push(osc);
+    const osc = ctx.createOscillator(); osc.type = instrument.wave; osc.frequency.value = frequency; osc.connect(sourceInput); sources.push(osc);
     if (instrument.detune) {
       osc.detune.value = -instrument.detune;
-      const other = ctx.createOscillator(); other.type = instrument.wave; other.frequency.value = frequency; other.detune.value = instrument.detune; other.connect(envelope); sources.push(other);
+      const other = ctx.createOscillator(); other.type = instrument.wave; other.frequency.value = frequency; other.detune.value = instrument.detune; other.connect(sourceInput); sources.push(other);
     }
     if (instrument.fm) {
-      const mod = ctx.createOscillator(), depth = ctx.createGain(); mod.frequency.value = frequency * 3.01; depth.gain.setValueAtTime(frequency * 1.4, time); depth.gain.exponentialRampToValueAtTime(1, time + Math.max(.03, length)); mod.connect(depth); depth.connect(osc.frequency); sources.push(mod); extra.push(depth);
+      const mod = ctx.createOscillator(), depth = ctx.createGain(); mod.frequency.value = frequency * instrument.fm.ratio; depth.gain.setValueAtTime(frequency * instrument.fm.depth, time); depth.gain.exponentialRampToValueAtTime(1, time + Math.max(.03, length * instrument.fm.decay)); mod.connect(depth); depth.connect(osc.frequency); sources.push(mod); extra.push(depth);
     }
   }
   let cleaned = false;

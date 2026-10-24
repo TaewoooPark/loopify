@@ -4,3 +4,5 @@ dist/
 .openai/state/
 *.log
 test-results/
+*.tsbuildinfo
+.openai/hosting.json

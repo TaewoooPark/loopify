@@ -1,7 +1,7 @@
 import * as MidiPackage from '@tonejs/midi';
 const Midi: typeof MidiPackage.Midi = Reflect.get(MidiPackage, 'Midi') ?? Reflect.get(MidiPackage, 'default').Midi;
 import { zipSync, strToU8 } from 'fflate';
-import { type Snapshot, ENGINE_VERSION } from './engine';
+import { type Snapshot } from './engine';
 
 export function midiBytes(snapshot: Snapshot): Uint8Array {
   const midi = new Midi();
@@ -35,7 +35,7 @@ export function wavBytes(channels: Float32Array[], sampleRate: number): Uint8Arr
 }
 
 export function bundleBytes(snapshot: Snapshot, wav: Uint8Array, credits: string) {
-  return zipSync({ 'loop.mid': midiBytes(snapshot), 'loop.wav': wav, 'loopify.json': strToU8(JSON.stringify({ ...snapshot, version: ENGINE_VERSION }, null, 2)), 'CREDITS.txt': strToU8(credits) }, { level: 0 });
+  return zipSync({ 'loop.mid': midiBytes(snapshot), 'loop.wav': wav, 'loopify.json': strToU8(JSON.stringify(snapshot, null, 2)), 'CREDITS.txt': strToU8(credits) }, { level: 0 });
 }
 
 export function download(bytes: Uint8Array | string, name: string, type: string) {

@@ -62,3 +62,30 @@ test('project validation rejects invalid data and accepts round trips', () => {
   assert.equal(validateSnapshot({ ...snapshot, loop: { ...snapshot.loop, notes: [{ ...snapshot.loop.notes[0], duration: -1 }] } }), null);
   assert.equal(validateSnapshot(null), null);
 });
+
+test('map extremes produce substantial changes in rhythm, articulation and dynamics', () => {
+  let sparse = 0, dense = 0, short = 0, long = 0, evenRange = 0, contourRange = 0;
+  const changed = (seed: number, map: number, axis: 'x' | 'y', value: number) => generate({ ...DEFAULT, seed, maps: DEFAULT.maps.map((m, i) => i === map ? { ...m, [axis]: value } : m) });
+  const duration = (loop: ReturnType<typeof generate>) => loop.notes.reduce((sum, n) => sum + n.duration, 0) / loop.notes.length;
+  const range = (loop: ReturnType<typeof generate>) => Math.max(...loop.notes.map(n => n.velocity)) - Math.min(...loop.notes.map(n => n.velocity));
+  for (let seed = 0; seed < 64; seed++) {
+    sparse += changed(seed, 2, 'x', 0).notes.length;
+    dense += changed(seed, 2, 'x', 1).notes.length;
+    short += duration(changed(seed, 4, 'x', 0));
+    long += duration(changed(seed, 4, 'x', 1));
+    evenRange += range(changed(seed, 4, 'y', 0));
+    contourRange += range(changed(seed, 4, 'y', 1));
+  }
+  assert.ok(dense > sparse * 3, 'density must change the musical texture, not just add one note');
+  assert.ok(long > short * 4, 'articulation must range from short points to sustained lines');
+  assert.ok(contourRange > evenRange * 2, 'contour must create audible dynamic accents');
+});
+
+test('new seeds vary rhythmic phrases as well as pitches', () => {
+  const patterns = new Set<string>();
+  for (let seed = 0; seed < 64; seed++) {
+    const loop = generate({ ...DEFAULT, seed });
+    patterns.add(JSON.stringify([...new Set(loop.notes.filter(n => n.voice === 'chord' && n.bar === 0).map(n => Math.floor(n.start * 4) / 4))]));
+  }
+  assert.ok(patterns.size >= 4, `${patterns.size} distinct comping rhythms`);
+});
